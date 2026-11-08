@@ -511,13 +511,25 @@ class NeewerLightDevice:
         min_k, max_k = self.color_temp_range
         return int(min_k + (internal / 100) * (max_k - min_k))
 
-    async def _send_power_on(self) -> bool:
-        """Send the power-on packet, then wait briefly for it to take effect.
+    async def _ensure_power_on(self) -> bool:
+        """Wake the light from standby before sending lighting commands.
 
-        Some panels ignore lighting commands while in standby, so models
-        configured with use_power_commands get an explicit power-on packet
-        before any brightness/color/HSI command.
+        Queries the power status first: sending power-on to a panel that is
+        already on can wedge it until the next physical power cycle
+        (observed on the RGB660 PRO), so the wake packet is only sent when
+        the light reports standby. If the query fails, no power packet is
+        sent and the lighting command proceeds on its own — the same safe
+        behavior as lights without power commands.
         """
+        if not self.uses_power_commands:
+            return True
+
+        is_on = await self.async_get_power_status(keep_connected=True)
+        if is_on is None or is_on:
+            # Query failed or the light is already on: never send power-on
+            # blindly.
+            return True
+
         power_cmd = self._build_power_command(on=True)
         if not await self._send_command(power_cmd, keep_connected=True):
             return False
@@ -549,7 +561,7 @@ class NeewerLightDevice:
             if saturation is not None:
                 new_saturation = max(0, min(100, saturation))
 
-            if self.uses_power_commands and not await self._send_power_on():
+            if not await self._ensure_power_on():
                 return False
 
             cmd = self._build_hsi_command(new_hue, new_saturation, new_brightness)
@@ -567,7 +579,7 @@ class NeewerLightDevice:
         if self.is_cct_only:
             # Old CCT-only lights need separate brightness and temp commands
             try:
-                if self.uses_power_commands and not await self._send_power_on():
+                if not await self._ensure_power_on():
                     return False
 
                 bri_cmd = self._build_brightness_only_command(new_brightness)
@@ -583,7 +595,7 @@ class NeewerLightDevice:
                 return False
         else:
             # Standard/Infinity lights use combined CCT command
-            if self.uses_power_commands and not await self._send_power_on():
+            if not await self._ensure_power_on():
                 return False
             cmd = self._build_cct_command(new_brightness, new_color_temp)
             success = await self._send_command(cmd)
@@ -686,13 +698,18 @@ class NeewerLightDevice:
         self._notify_event.set()
 
     async def _send_command_with_response(
-        self, command: list[int], timeout: float = 2.0
+        self,
+        command: list[int],
+        timeout: float = 2.0,
+        keep_connected: bool = False,
     ) -> bytes | None:
         """Send a command and wait for notification response.
 
         Args:
             command: The command bytes to send
             timeout: How long to wait for response
+            keep_connected: If True, don't disconnect after the response
+                (for sequences that continue with more commands)
 
         Returns:
             The notification response data, or None if failed/timeout
@@ -745,20 +762,25 @@ class NeewerLightDevice:
             self._connected = False
             return None
         finally:
-            if not success or not self._keep_connected:
+            if not success or not (keep_connected or self._keep_connected):
                 await self.disconnect()
 
-    async def async_get_power_status(self) -> bool | None:
+    async def async_get_power_status(self, keep_connected: bool = False) -> bool | None:
         """Query the device power status.
 
         Response format: [0x78, type, len, data..., checksum]
         - Type 0x02 = power status
         - Data byte: 1=ON, 2=STANDBY
 
+        Args:
+            keep_connected: If True, don't disconnect after the response.
+
         Returns:
             True if ON, False if STANDBY/OFF, None if query failed
         """
-        response = await self._send_command_with_response(CMD_GET_POWER_STATUS)
+        response = await self._send_command_with_response(
+            CMD_GET_POWER_STATUS, keep_connected=keep_connected
+        )
         if response is None or len(response) < 4:
             _LOGGER.debug("Failed to get power status from %s", self._name)
             return None

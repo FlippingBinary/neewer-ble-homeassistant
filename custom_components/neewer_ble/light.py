@@ -88,6 +88,23 @@ class NeewerBLELight(LightEntity):
             model=device.model_name,
         )
 
+    async def async_added_to_hass(self) -> None:
+        """Sync the assumed state with the light's real power state.
+
+        The device pushes no state on its own, so a single power-status
+        query runs once when the entity is added; the result replaces the
+        assumed off state from startup.
+        """
+        await super().async_added_to_hass()
+
+        async def _sync_state() -> None:
+            if await self._device.async_update():
+                self.async_write_ha_state()
+
+        self._entry.async_create_background_task(
+            self.hass, _sync_state(), f"neewer_ble_{self._attr_unique_id}_sync"
+        )
+
     @property
     def is_on(self) -> bool:
         """Return true if light is on."""
