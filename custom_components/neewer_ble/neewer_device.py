@@ -511,6 +511,19 @@ class NeewerLightDevice:
         min_k, max_k = self.color_temp_range
         return int(min_k + (internal / 100) * (max_k - min_k))
 
+    async def _send_power_on(self) -> bool:
+        """Send the power-on packet, then wait briefly for it to take effect.
+
+        Some panels ignore lighting commands while in standby, so models
+        configured with use_power_commands get an explicit power-on packet
+        before any brightness/color/HSI command.
+        """
+        power_cmd = self._build_power_command(on=True)
+        if not await self._send_command(power_cmd, keep_connected=True):
+            return False
+        await asyncio.sleep(0.05)
+        return True
+
     async def turn_on(
         self,
         brightness: int | None = None,
@@ -536,6 +549,9 @@ class NeewerLightDevice:
             if saturation is not None:
                 new_saturation = max(0, min(100, saturation))
 
+            if self.uses_power_commands and not await self._send_power_on():
+                return False
+
             cmd = self._build_hsi_command(new_hue, new_saturation, new_brightness)
             success = await self._send_command(cmd)
             if success:
@@ -551,11 +567,8 @@ class NeewerLightDevice:
         if self.is_cct_only:
             # Old CCT-only lights need separate brightness and temp commands
             try:
-                if self.uses_power_commands:
-                    power_cmd = self._build_power_command(on=True)
-                    if not await self._send_command(power_cmd, keep_connected=True):
-                        return False
-                    await asyncio.sleep(0.05)
+                if self.uses_power_commands and not await self._send_power_on():
+                    return False
 
                 bri_cmd = self._build_brightness_only_command(new_brightness)
                 if not await self._send_command(bri_cmd, keep_connected=True):
@@ -570,6 +583,8 @@ class NeewerLightDevice:
                 return False
         else:
             # Standard/Infinity lights use combined CCT command
+            if self.uses_power_commands and not await self._send_power_on():
+                return False
             cmd = self._build_cct_command(new_brightness, new_color_temp)
             success = await self._send_command(cmd)
 
@@ -580,9 +595,10 @@ class NeewerLightDevice:
         return success
 
     async def turn_off(self) -> bool:
-        """Turn off the light by setting brightness to 0.
+        """Turn off the light.
 
-        Using brightness=0 instead of power off command because the power
+        Models with use_power_commands get the explicit power-off packet.
+        Other lights are dimmed to brightness 0 instead, because the power
         command puts some lights into deep sleep with Bluetooth disabled.
         """
         if self.uses_power_commands:
