@@ -178,6 +178,14 @@ SUPPORTED_MODELS = {
         "cct_only": True,
         "light_type": 0,
     },
+    "T100C": {
+        "name": "T100C",
+        "rgb": True,
+        "cct_range": (3200, 5600),
+        "cct_only": True,
+        "light_type": 0,
+        "use_power_commands": True,
+    },
     # GL Series (Key lights)
     # GL1 Pro advertises its product name instead of a numeric model code and
     # uses the standard, CCT-only protocol (separate brightness/temp packets).
