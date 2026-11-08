@@ -175,6 +175,11 @@ class NeewerLightDevice:
         return self._model_info.get("use_power_commands", False)
 
     @property
+    def uses_new_power_command(self) -> bool:
+        """Return True if the light needs MAC-addressed power packets."""
+        return self._model_info.get("new_power_command", False)
+
+    @property
     def color_temp_range(self) -> tuple[int, int]:
         """Return the color temperature range in Kelvin."""
         return self._model_info.get("cct_range", (3200, 5600))
@@ -457,6 +462,7 @@ class NeewerLightDevice:
 
         From NeewerLite-Python:
         - Standard: [120, 129, 1, 1/2] + checksum (1=on, 2=off)
+        - Standard (new firmware): [120, 141, 8, MAC(6), 129, 1/2] + checksum
         - Infinity: [120, 141, 8, MAC(6), 129, 1/0] + checksum (1=on, 0=off)
         """
         if self.uses_infinity_protocol:
@@ -464,6 +470,13 @@ class NeewerLightDevice:
             cmd = [0x78, INF_POWER_CMD, 0x08]
             cmd.extend(self._get_mac_bytes())
             cmd.extend([STD_POWER_CMD, 1 if on else 0])
+        elif self.uses_new_power_command:
+            # New standard power (sniffed from the Neewer app): newer
+            # firmware addresses the light by MAC and ignores the legacy
+            # packet entirely. [0x78, 0x8D, 0x08, MAC(6), 0x81, 1/2] + cksum
+            cmd = [0x78, INF_POWER_CMD, 0x08]
+            cmd.extend(self._get_mac_bytes())
+            cmd.extend([STD_POWER_CMD, 1 if on else 2])
         else:
             # Standard: [0x78, 0x81, 0x01, on/off] + checksum (1=on, 2=off)
             cmd = [0x78, STD_POWER_CMD, 0x01, 1 if on else 2]
