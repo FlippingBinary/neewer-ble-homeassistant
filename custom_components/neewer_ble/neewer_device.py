@@ -382,7 +382,7 @@ class NeewerLightDevice:
             await self._client.write_gatt_char(
                 NEEWER_WRITE_CHARACTERISTIC_UUID,
                 bytes(command),
-                response=False,
+                response=True,
             )
             success = True
             return True
@@ -748,7 +748,7 @@ class NeewerLightDevice:
             await self._client.write_gatt_char(
                 NEEWER_WRITE_CHARACTERISTIC_UUID,
                 bytes(command),
-                response=False,
+                response=True,
             )
 
             # Wait for notification response
