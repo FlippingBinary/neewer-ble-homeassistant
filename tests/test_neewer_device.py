@@ -111,9 +111,7 @@ async def test_turn_off_uses_explicit_power_command() -> None:
     result = await device.turn_off()
 
     assert result
-    device._send_command.assert_awaited_once_with(
-        [0x78, 0x81, 0x01, 0x02, 0xFC]
-    )
+    device._send_command.assert_awaited_once_with([0x78, 0x81, 0x01, 0x02, 0xFC])
     assert not device.is_on
 
 

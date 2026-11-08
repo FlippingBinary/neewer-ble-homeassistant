@@ -99,7 +99,12 @@ class NeewerLightDevice:
         name = self._name.upper()
 
         # Remove common prefixes for matching
-        name_clean = name.replace("NEEWER-", "").replace("NEEWER", "").replace("-", "").replace(" ", "")
+        name_clean = (
+            name.replace("NEEWER-", "")
+            .replace("NEEWER", "")
+            .replace("-", "")
+            .replace(" ", "")
+        )
 
         # Prefer the most specific matching model code. This prevents names such
         # as RGB168 from being incorrectly detected as the shorter RGB1 model.
@@ -204,7 +209,9 @@ class NeewerLightDevice:
     @property
     def is_connected(self) -> bool:
         """Return True if connected."""
-        return self._connected and self._client is not None and self._client.is_connected
+        return (
+            self._connected and self._client is not None and self._client.is_connected
+        )
 
     def _get_hardware_mac_macos(self) -> str | None:
         """Get hardware MAC address on macOS using system_profiler.
@@ -224,7 +231,9 @@ class NeewerLightDevice:
             # Find the device by name
             name_offset = output.find(self._name)
             if name_offset == -1:
-                _LOGGER.debug("Device %s not found in system_profiler output", self._name)
+                _LOGGER.debug(
+                    "Device %s not found in system_profiler output", self._name
+                )
                 return None
 
             # Find "Address:" after the device name
@@ -236,7 +245,7 @@ class NeewerLightDevice:
             # Extract the MAC address (format: XX-XX-XX-XX-XX-XX or XX:XX:XX:XX:XX:XX)
             # Address is 17 chars after "Address: "
             mac_start = address_offset + 9
-            mac_str = output[mac_start:mac_start + 17].strip()
+            mac_str = output[mac_start : mac_start + 17].strip()
 
             # Validate it looks like a MAC address
             mac_clean = mac_str.replace("-", ":").upper()
@@ -270,7 +279,7 @@ class NeewerLightDevice:
 
             _LOGGER.warning(
                 "Could not get hardware MAC for %s on macOS, Infinity commands may fail",
-                self._name
+                self._name,
             )
 
         # For non-macOS or non-Infinity, use the BLE address directly
@@ -336,14 +345,18 @@ class NeewerLightDevice:
                 # Add timeout to prevent hanging on disconnect
                 await asyncio.wait_for(self._client.disconnect(), timeout=5.0)
             except asyncio.TimeoutError:
-                _LOGGER.warning("Timeout disconnecting from %s, forcing cleanup", self._name)
+                _LOGGER.warning(
+                    "Timeout disconnecting from %s, forcing cleanup", self._name
+                )
             except Exception as err:
                 _LOGGER.debug("Error disconnecting from %s: %s", self._name, err)
             finally:
                 self._client = None
                 self._connected = False
 
-    async def _send_command(self, command: list[int], keep_connected: bool = False) -> bool:
+    async def _send_command(
+        self, command: list[int], keep_connected: bool = False
+    ) -> bool:
         """Send a command to the device.
 
         Args:
@@ -410,7 +423,9 @@ class NeewerLightDevice:
 
         return self._add_checksum(cmd)
 
-    def _build_hsi_command(self, hue: int, saturation: int, intensity: int) -> list[int]:
+    def _build_hsi_command(
+        self, hue: int, saturation: int, intensity: int
+    ) -> list[int]:
         """Build an HSI (hue, saturation, intensity) command for RGB lights.
 
         From NeewerLite-Python:
@@ -521,9 +536,7 @@ class NeewerLightDevice:
             if saturation is not None:
                 new_saturation = max(0, min(100, saturation))
 
-            cmd = self._build_hsi_command(
-                new_hue, new_saturation, new_brightness
-            )
+            cmd = self._build_hsi_command(new_hue, new_saturation, new_brightness)
             success = await self._send_command(cmd)
             if success:
                 self._is_on = True
@@ -621,7 +634,9 @@ class NeewerLightDevice:
         self._color_temp = new_color_temp
         return True
 
-    async def set_rgb(self, hue: int, saturation: int, brightness: int | None = None) -> bool:
+    async def set_rgb(
+        self, hue: int, saturation: int, brightness: int | None = None
+    ) -> bool:
         """Set RGB color using HSI values."""
         if not self.supports_rgb:
             _LOGGER.warning("Device %s does not support RGB", self._name)
@@ -633,9 +648,7 @@ class NeewerLightDevice:
         if brightness is not None:
             new_brightness = max(0, min(100, brightness))
 
-        cmd = self._build_hsi_command(
-            new_hue, new_saturation, new_brightness
-        )
+        cmd = self._build_hsi_command(new_hue, new_saturation, new_brightness)
         success = await self._send_command(cmd)
         if success:
             self._hue = new_hue
@@ -740,13 +753,17 @@ class NeewerLightDevice:
             power_state = response[3]
             is_on = power_state == 1
             _LOGGER.debug(
-                "Power status for %s: %s (raw: %d)", self._name,
-                "ON" if is_on else "STANDBY", power_state
+                "Power status for %s: %s (raw: %d)",
+                self._name,
+                "ON" if is_on else "STANDBY",
+                power_state,
             )
             return is_on
 
         _LOGGER.debug(
-            "Unexpected response type from %s: %s", self._name, [hex(b) for b in response]
+            "Unexpected response type from %s: %s",
+            self._name,
+            [hex(b) for b in response],
         )
         return None
 
@@ -771,7 +788,9 @@ class NeewerLightDevice:
             return {"channel": channel, "raw": list(response)}
 
         _LOGGER.debug(
-            "Unexpected response type from %s: %s", self._name, [hex(b) for b in response]
+            "Unexpected response type from %s: %s",
+            self._name,
+            [hex(b) for b in response],
         )
         return None
 
@@ -786,9 +805,7 @@ class NeewerLightDevice:
             if power_status is not None:
                 self._is_on = power_status
                 self._last_poll_success = True
-                _LOGGER.debug(
-                    "Updated state for %s: is_on=%s", self._name, self._is_on
-                )
+                _LOGGER.debug("Updated state for %s: is_on=%s", self._name, self._is_on)
                 return True
             else:
                 self._last_poll_success = False
