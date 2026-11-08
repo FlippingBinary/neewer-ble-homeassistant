@@ -12,7 +12,9 @@ from homeassistant.components.light import (
     ATTR_HS_COLOR,
     ColorMode,
 )
+from homeassistant.core import State
 from homeassistant.exceptions import HomeAssistantError
+from pytest_homeassistant_custom_component.common import mock_restore_cache
 
 from custom_components.neewer_ble.light import NeewerBLELight
 
@@ -163,18 +165,12 @@ async def test_rapid_updates_skip_superseded_pending_commands() -> None:
 
     device.turn_on.side_effect = _turn_on
 
-    first = asyncio.create_task(
-        entity.async_turn_on(**{ATTR_BRIGHTNESS: 51})
-    )
+    first = asyncio.create_task(entity.async_turn_on(**{ATTR_BRIGHTNESS: 51}))
     await first_command_started.wait()
 
-    superseded = asyncio.create_task(
-        entity.async_turn_on(**{ATTR_BRIGHTNESS: 102})
-    )
+    superseded = asyncio.create_task(entity.async_turn_on(**{ATTR_BRIGHTNESS: 102}))
     await asyncio.sleep(0)
-    latest = asyncio.create_task(
-        entity.async_turn_on(**{ATTR_BRIGHTNESS: 204})
-    )
+    latest = asyncio.create_task(entity.async_turn_on(**{ATTR_BRIGHTNESS: 204}))
     await asyncio.sleep(0)
 
     release_first_command.set()
@@ -182,3 +178,93 @@ async def test_rapid_updates_skip_superseded_pending_commands() -> None:
 
     assert sent_brightness == [20, 80]
     assert entity.async_write_ha_state.call_count == 1
+
+
+async def test_added_to_hass_polls_real_power_state(hass) -> None:
+    """When added, the entity polls the light and publishes the result."""
+    entity, device = _entity()
+    entity.hass = hass
+    device.is_on = False
+
+    async def _update() -> bool:
+        device.is_on = True
+        return True
+
+    device.async_update = AsyncMock(side_effect=_update)
+    entity._entry.async_create_background_task = Mock(
+        side_effect=lambda hass_, target, name=None: hass_.async_create_task(target)
+    )
+
+    await entity.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    device.async_update.assert_awaited_once()
+    entity.async_write_ha_state.assert_called_once()
+    assert entity.is_on
+
+
+async def test_added_to_hass_keeps_assumed_state_when_poll_fails(hass) -> None:
+    """A failed poll leaves the assumed state untouched."""
+    entity, device = _entity()
+    entity.hass = hass
+    device.is_on = False
+    device.async_update = AsyncMock(return_value=False)
+    entity._entry.async_create_background_task = Mock(
+        side_effect=lambda hass_, target, name=None: hass_.async_create_task(target)
+    )
+
+    await entity.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    device.async_update.assert_awaited_once()
+    entity.async_write_ha_state.assert_not_called()
+    assert not entity.is_on
+
+
+async def test_added_to_hass_restores_last_set_state(hass) -> None:
+    """A restart must not invent state: adopt the last values we set."""
+    entity, device = _entity()
+    entity.hass = hass
+    entity.entity_id = "light.studio_light"
+    entity.platform = Mock()
+    mock_restore_cache(
+        hass,
+        [
+            State(
+                "light.studio_light",
+                "on",
+                {
+                    "brightness": 118,
+                    "color_temp_kelvin": 4500,
+                    "color_mode": "color_temp",
+                },
+            )
+        ],
+    )
+    device.is_on = False
+
+    def _restore(
+        is_on, brightness=None, color_temp_kelvin=None, hue=None, saturation=None
+    ):
+        device.is_on = is_on
+        if brightness is not None:
+            device.brightness = brightness
+        if color_temp_kelvin is not None:
+            device.color_temp_kelvin = color_temp_kelvin
+
+    device.restore_state = Mock(side_effect=_restore)
+    device.async_update = AsyncMock(return_value=False)
+    entity._entry.async_create_background_task = Mock(
+        side_effect=lambda hass_, target, name=None: hass_.async_create_task(target)
+    )
+
+    await entity.async_added_to_hass()
+    await hass.async_block_till_done()
+
+    device.restore_state.assert_called_once_with(
+        is_on=True, brightness=46, color_temp_kelvin=4500, hue=None, saturation=None
+    )
+    assert device.is_on
+    assert device.brightness == 46
+    assert device.color_temp_kelvin == 4500
+    entity.async_write_ha_state.assert_not_called()

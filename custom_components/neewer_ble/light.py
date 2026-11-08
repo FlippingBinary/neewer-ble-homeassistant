@@ -13,11 +13,12 @@ from homeassistant.components.light import (
     ColorMode,
     LightEntity,
 )
-from homeassistant.const import CONF_ADDRESS, CONF_NAME
+from homeassistant.const import CONF_ADDRESS, CONF_NAME, STATE_OFF, STATE_ON
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import NeewerBLEConfigEntry
 from .const import DOMAIN
@@ -47,7 +48,7 @@ async def async_setup_entry(
     async_add_entities([NeewerBLELight(device, entry)])
 
 
-class NeewerBLELight(LightEntity):
+class NeewerBLELight(RestoreEntity, LightEntity):
     """Representation of a Neewer BLE Light."""
 
     _attr_has_entity_name = True
@@ -55,9 +56,7 @@ class NeewerBLELight(LightEntity):
     _attr_should_poll = False
     _attr_assumed_state = True
 
-    def __init__(
-        self, device: NeewerLightDevice, entry: NeewerBLEConfigEntry
-    ) -> None:
+    def __init__(self, device: NeewerLightDevice, entry: NeewerBLEConfigEntry) -> None:
         """Initialize the light."""
         self._device = device
         self._entry = entry
@@ -89,13 +88,35 @@ class NeewerBLELight(LightEntity):
         )
 
     async def async_added_to_hass(self) -> None:
-        """Sync the assumed state with the light's real power state.
+        """Restore the last set state, then refine on/off via the device.
 
-        The device pushes no state on its own, so a single power-status
-        query runs once when the entity is added; the result replaces the
-        assumed off state from startup.
+        The device exposes no brightness/color readback (confirmed against
+        the official app's own BLE traffic), so with this integration as
+        the light's only controller, the last values it set are the light's
+        values; RestoreEntity carries them across restarts. The one piece
+        of real readback — the power-status query — refines on/off after.
         """
         await super().async_added_to_hass()
+
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state in (STATE_ON, STATE_OFF):
+            attrs = last_state.attributes
+            hue = saturation = None
+            if attrs.get(ATTR_HS_COLOR) is not None:
+                hue, saturation = attrs[ATTR_HS_COLOR]
+            self._device.restore_state(
+                is_on=last_state.state == STATE_ON,
+                brightness=(
+                    round(attrs[ATTR_BRIGHTNESS] * 100 / 255)
+                    if attrs.get(ATTR_BRIGHTNESS) is not None
+                    else None
+                ),
+                color_temp_kelvin=attrs.get(ATTR_COLOR_TEMP_KELVIN),
+                hue=hue,
+                saturation=saturation,
+            )
+            if hue is not None and self._device.supports_rgb:
+                self._attr_color_mode = ColorMode.HS
 
         async def _sync_state() -> None:
             if await self._device.async_update():
@@ -140,15 +161,11 @@ class NeewerBLELight(LightEntity):
 
         async with self._command_lock:
             if command_generation != self._command_generation:
-                _LOGGER.debug(
-                    "Skipping superseded command for %s", self._device.name
-                )
+                _LOGGER.debug("Skipping superseded command for %s", self._device.name)
                 return
             await self._async_turn_on(command_generation, **kwargs)
 
-    async def _async_turn_on(
-        self, command_generation: int, **kwargs: Any
-    ) -> None:
+    async def _async_turn_on(self, command_generation: int, **kwargs: Any) -> None:
         """Send the latest turn-on command while holding the command lock."""
         brightness = kwargs.get(ATTR_BRIGHTNESS)
         color_temp_kelvin = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
@@ -211,9 +228,7 @@ class NeewerBLELight(LightEntity):
 
         async with self._command_lock:
             if command_generation != self._command_generation:
-                _LOGGER.debug(
-                    "Skipping superseded command for %s", self._device.name
-                )
+                _LOGGER.debug("Skipping superseded command for %s", self._device.name)
                 return
             if not await self._device.turn_off():
                 raise HomeAssistantError(

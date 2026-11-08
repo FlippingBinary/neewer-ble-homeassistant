@@ -34,6 +34,8 @@ def _runtime_device() -> SimpleNamespace:
         set_rgb=AsyncMock(return_value=True),
         disconnect=AsyncMock(),
         set_defaults=Mock(),
+        restore_state=Mock(),
+        async_update=AsyncMock(return_value=False),
     )
 
 

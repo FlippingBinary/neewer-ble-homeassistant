@@ -29,16 +29,16 @@ _LOGGER = logging.getLogger(__name__)
 # Infinity protocol: [0x78, CMD, LEN, MAC(6), ...params, checksum]
 
 # Standard protocol command bytes
-STD_POWER_CMD = 0x81   # 129 - Power on/off
-STD_BRI_CMD = 0x82     # 130 - Brightness only (for old CCT lights)
-STD_TEMP_CMD = 0x83    # 131 - Color temperature only (for old CCT lights)
-STD_HSI_CMD = 0x86     # 134 - HSI mode (hue, sat, brightness)
-STD_CCT_CMD = 0x87     # 135 - CCT mode (brightness, temp, GM)
+STD_POWER_CMD = 0x81  # 129 - Power on/off
+STD_BRI_CMD = 0x82  # 130 - Brightness only (for old CCT lights)
+STD_TEMP_CMD = 0x83  # 131 - Color temperature only (for old CCT lights)
+STD_HSI_CMD = 0x86  # 134 - HSI mode (hue, sat, brightness)
+STD_CCT_CMD = 0x87  # 135 - CCT mode (brightness, temp, GM)
 
 # Infinity protocol command bytes
-INF_POWER_CMD = 0x8D   # 141 - Power on/off
-INF_CCT_CMD = 0x90     # 144 - CCT mode
-INF_HSI_CMD = 0x8F     # 143 - HSI mode (NOT 0x91!)
+INF_POWER_CMD = 0x8D  # 141 - Power on/off
+INF_CCT_CMD = 0x90  # 144 - CCT mode
+INF_HSI_CMD = 0x8F  # 143 - HSI mode (NOT 0x91!)
 
 
 class NeewerLightDevice:
@@ -173,11 +173,6 @@ class NeewerLightDevice:
     def uses_power_commands(self) -> bool:
         """Return True if the device requires explicit power commands."""
         return self._model_info.get("use_power_commands", False)
-
-    @property
-    def uses_new_power_command(self) -> bool:
-        """Return True if the light needs MAC-addressed power packets."""
-        return self._model_info.get("new_power_command", False)
 
     @property
     def color_temp_range(self) -> tuple[int, int]:
@@ -423,8 +418,18 @@ class NeewerLightDevice:
             # Infinity-hybrid (type 2): [0x78, 0x87, 0x03, brightness, temp, GM] + checksum
             cmd = [0x78, STD_CCT_CMD, 0x03, brightness, temp_protocol, gm_value]
         else:
-            # Standard (type 0): [0x78, 0x87, 0x02, brightness, temp] + checksum (no GM!)
-            cmd = [0x78, STD_CCT_CMD, 0x02, brightness, temp_protocol]
+            # Standard (type 0): [0x78, 0x87, 0x04, brightness, temp, 0x00,
+            # 0x00] + checksum — the trailing zero bytes match the packets
+            # the Neewer app sends (captured over HCI).
+            cmd = [
+                0x78,
+                STD_CCT_CMD,
+                0x04,
+                brightness,
+                temp_protocol,
+                0x00,
+                0x00,
+            ]
 
         return self._add_checksum(cmd)
 
@@ -452,8 +457,19 @@ class NeewerLightDevice:
             cmd.extend(self._get_mac_bytes())
             cmd.extend([STD_HSI_CMD, hue_low, hue_high, saturation, intensity])
         else:
-            # Standard: [0x78, 0x86, 0x04, hue_low, hue_high, saturation, brightness] + checksum
-            cmd = [0x78, STD_HSI_CMD, 0x04, hue_low, hue_high, saturation, intensity]
+            # Standard (type 0): [0x78, 0x86, 0x05, hue_low, hue_high,
+            # saturation, brightness, 0x00] + checksum — the fifth trailing
+            # byte matches the packets the Neewer app sends (captured HCI).
+            cmd = [
+                0x78,
+                STD_HSI_CMD,
+                0x05,
+                hue_low,
+                hue_high,
+                saturation,
+                intensity,
+                0x00,
+            ]
 
         return self._add_checksum(cmd)
 
@@ -462,7 +478,6 @@ class NeewerLightDevice:
 
         From NeewerLite-Python:
         - Standard: [120, 129, 1, 1/2] + checksum (1=on, 2=off)
-        - Standard (new firmware): [120, 141, 8, MAC(6), 129, 1/2] + checksum
         - Infinity: [120, 141, 8, MAC(6), 129, 1/0] + checksum (1=on, 0=off)
         """
         if self.uses_infinity_protocol:
@@ -470,13 +485,6 @@ class NeewerLightDevice:
             cmd = [0x78, INF_POWER_CMD, 0x08]
             cmd.extend(self._get_mac_bytes())
             cmd.extend([STD_POWER_CMD, 1 if on else 0])
-        elif self.uses_new_power_command:
-            # New standard power (sniffed from the Neewer app): newer
-            # firmware addresses the light by MAC and ignores the legacy
-            # packet entirely. [0x78, 0x8D, 0x08, MAC(6), 0x81, 1/2] + cksum
-            cmd = [0x78, INF_POWER_CMD, 0x08]
-            cmd.extend(self._get_mac_bytes())
-            cmd.extend([STD_POWER_CMD, 1 if on else 2])
         else:
             # Standard: [0x78, 0x81, 0x01, on/off] + checksum (1=on, 2=off)
             cmd = [0x78, STD_POWER_CMD, 0x01, 1 if on else 2]
@@ -524,30 +532,76 @@ class NeewerLightDevice:
         min_k, max_k = self.color_temp_range
         return int(min_k + (internal / 100) * (max_k - min_k))
 
-    async def _ensure_power_on(self) -> bool:
+    def _build_handshake_commands(self) -> list[list[int]]:
+        """Build the connect-session handshake the Neewer app sends.
+
+        Captured from an HCI snoop of the Android app: every connect
+        session starts with these MAC-addressed packets, and power commands
+        from sessions that skip them are silently ignored by current
+        firmware. The 0x95/0xD1/0xD3 tags appear in no reference
+        implementation.
+        """
+        mac = self._get_mac_bytes()
+        return [
+            self._add_checksum([0x78, 0x95, 0x06, *mac]),
+            self._add_checksum([0x78, 0xD3, 0x07, *mac, 0x00]),
+            self._add_checksum([0x78, 0xD1, 0x06, *mac]),
+            self._add_checksum([0x78, 0x80, 0x00]),
+        ]
+
+    async def _send_handshake(self) -> bool:
+        """Send the connect-session handshake packets."""
+        for cmd in self._build_handshake_commands():
+            if not await self._send_command(cmd, keep_connected=True):
+                return False
+            await asyncio.sleep(0.05)
+        return True
+
+    async def _ensure_power_on(self) -> bool | None:
         """Wake the light from standby before sending lighting commands.
 
         Queries the power status first: sending power-on to a panel that is
         already on can wedge it until the next physical power cycle
         (observed on the RGB660 PRO), so the wake packet is only sent when
-        the light reports standby. If the query fails, no power packet is
-        sent and the lighting command proceeds on its own — the same safe
-        behavior as lights without power commands.
+        the light reports standby — and only after the session handshake,
+        without which current firmware silently ignores power packets. If
+        the query fails, no power packet is sent and the lighting command
+        proceeds on its own — the same safe behavior as lights without
+        power commands.
+
+        Returns:
+            False if the wake sequence failed, True if the light was woken
+            from standby (the caller should verify the transition), None if
+            no wake was needed (already on, query failed, or power commands
+            unused).
         """
         if not self.uses_power_commands:
-            return True
+            return None
 
         is_on = await self.async_get_power_status(keep_connected=True)
         if is_on is None or is_on:
             # Query failed or the light is already on: never send power-on
             # blindly.
-            return True
+            return None
+
+        if not await self._send_handshake():
+            return False
 
         power_cmd = self._build_power_command(on=True)
         if not await self._send_command(power_cmd, keep_connected=True):
             return False
         await asyncio.sleep(0.05)
         return True
+
+    async def _confirm_wake(self) -> bool:
+        """Verify that a standby wake actually took effect.
+
+        The device exposes no brightness/color readback, so the power
+        status query is the only ground truth available: a light still
+        reporting standby means the wake packet was ignored, and the
+        command must fail rather than claim a state the light is not in.
+        """
+        return (await self.async_get_power_status()) is not False
 
     async def turn_on(
         self,
@@ -574,11 +628,14 @@ class NeewerLightDevice:
             if saturation is not None:
                 new_saturation = max(0, min(100, saturation))
 
-            if not await self._ensure_power_on():
+            woke = await self._ensure_power_on()
+            if woke is False:
                 return False
 
             cmd = self._build_hsi_command(new_hue, new_saturation, new_brightness)
             success = await self._send_command(cmd)
+            if success and woke and not await self._confirm_wake():
+                return False
             if success:
                 self._is_on = True
                 self._brightness = new_brightness
@@ -591,8 +648,10 @@ class NeewerLightDevice:
         # - other lights use combined CCT command (format depends on light_type)
         if self.is_cct_only:
             # Old CCT-only lights need separate brightness and temp commands
+            woke = None
             try:
-                if not await self._ensure_power_on():
+                woke = await self._ensure_power_on()
+                if woke is False:
                     return False
 
                 bri_cmd = self._build_brightness_only_command(new_brightness)
@@ -606,12 +665,17 @@ class NeewerLightDevice:
                 _LOGGER.error("Error in multi-command sequence: %s", err)
                 await self.disconnect()  # Ensure cleanup
                 return False
+            if success and woke and not await self._confirm_wake():
+                return False
         else:
             # Standard/Infinity lights use combined CCT command
-            if not await self._ensure_power_on():
+            woke = await self._ensure_power_on()
+            if woke is False:
                 return False
             cmd = self._build_cct_command(new_brightness, new_color_temp)
             success = await self._send_command(cmd)
+            if success and woke and not await self._confirm_wake():
+                return False
 
         if success:
             self._is_on = True
@@ -622,20 +686,35 @@ class NeewerLightDevice:
     async def turn_off(self) -> bool:
         """Turn off the light.
 
-        Models with use_power_commands get the explicit power-off packet.
-        Other lights are dimmed to brightness 0 instead, because the power
-        command puts some lights into deep sleep with Bluetooth disabled.
+        Models with use_power_commands get the session handshake plus the
+        explicit power-off packet, then verify via the power-status query
+        that the transition actually happened — a silently ignored power
+        packet must not be reported as off. Other lights are dimmed to
+        brightness 0 instead, because the power command puts some lights
+        into deep sleep with Bluetooth disabled.
         """
         if self.uses_power_commands:
-            cmd = self._build_power_command(on=False)
+            if not await self._send_handshake():
+                return False
+            if not await self._send_command(
+                self._build_power_command(on=False), keep_connected=True
+            ):
+                return False
+            # A failed verification query is tolerated (the write itself
+            # was acknowledged) — e.g. when a light drops its link while
+            # entering standby.
+            if await self.async_get_power_status():
+                return False
+            success = True
         elif self.is_cct_only:
             # Old CCT-only lights use separate brightness command
             cmd = self._build_brightness_only_command(0)
+            success = await self._send_command(cmd)
         else:
             # Standard/Infinity lights use CCT command with brightness=0
             cmd = self._build_cct_command(0, self._color_temp)
+            success = await self._send_command(cmd)
 
-        success = await self._send_command(cmd)
         if success:
             self._is_on = False
         return success
@@ -777,6 +856,30 @@ class NeewerLightDevice:
         finally:
             if not success or not (keep_connected or self._keep_connected):
                 await self.disconnect()
+
+    def restore_state(
+        self,
+        is_on: bool,
+        brightness: int | None = None,
+        color_temp_kelvin: int | None = None,
+        hue: int | None = None,
+        saturation: int | None = None,
+    ) -> None:
+        """Adopt the last values this integration set for the light.
+
+        The light provides no brightness/color readback, so with this
+        integration as the light's only controller its last successfully
+        sent values are the light's current values.
+        """
+        self._is_on = is_on
+        if brightness is not None:
+            self._brightness = max(0, min(100, brightness))
+        if color_temp_kelvin is not None:
+            self._color_temp = self._kelvin_to_internal(color_temp_kelvin)
+        if hue is not None:
+            self._hue = max(0, min(360, hue))
+        if saturation is not None:
+            self._saturation = max(0, min(100, saturation))
 
     async def async_get_power_status(self, keep_connected: bool = False) -> bool | None:
         """Query the device power status.

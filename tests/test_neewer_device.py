@@ -64,9 +64,10 @@ def test_temperature_commands_use_gl1_pro_range() -> None:
 
 
 async def test_turn_on_sends_power_brightness_and_temperature() -> None:
-    """GL1 Pro turn-on should send its three-command sequence."""
+    """GL1 Pro turn-on should run the handshake, then its three commands."""
     device = NeewerLightDevice(_ble_device())
     device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(side_effect=[False, True])
 
     with patch(
         "custom_components.neewer_ble.neewer_device.asyncio.sleep",
@@ -75,14 +76,22 @@ async def test_turn_on_sends_power_brightness_and_temperature() -> None:
         result = await device.turn_on(brightness=60, color_temp_kelvin=4500)
 
     assert result
+    mac = _mac_bytes(device.address)
+    handshake = [
+        _with_checksum([0x78, 0x95, 0x06, *mac]),
+        _with_checksum([0x78, 0xD3, 0x07, *mac, 0x00]),
+        _with_checksum([0x78, 0xD1, 0x06, *mac]),
+        _with_checksum([0x78, 0x80, 0x00]),
+    ]
     commands = [call.args for call in device._send_command.await_args_list]
     assert commands == [
+        *[(cmd,) for cmd in handshake],
         ([0x78, 0x81, 0x01, 0x01, 0xFB],),
         ([0x78, 0x82, 0x01, 60, 0x37],),
         ([0x78, 0x83, 0x01, 45, 0x29],),
     ]
     assert device._send_command.await_args_list[0].kwargs["keep_connected"]
-    assert device._send_command.await_args_list[1].kwargs["keep_connected"]
+    assert device._send_command.await_args_list[4].kwargs["keep_connected"]
     assert device.is_on
     assert device.brightness == 60
     assert abs(device.color_temp_kelvin - 4500) <= 1
@@ -93,6 +102,7 @@ async def test_turn_on_failure_preserves_assumed_state() -> None:
     device = NeewerLightDevice(_ble_device())
     original_temperature = device.color_temp_kelvin
     device._send_command = AsyncMock(return_value=False)
+    device.async_get_power_status = AsyncMock(return_value=None)
 
     result = await device.turn_on(brightness=25, color_temp_kelvin=6000)
 
@@ -103,15 +113,33 @@ async def test_turn_on_failure_preserves_assumed_state() -> None:
 
 
 async def test_turn_off_uses_explicit_power_command() -> None:
-    """GL1 Pro should use the explicit power-off packet."""
+    """GL1 Pro should run the handshake, then the power-off packet."""
     device = NeewerLightDevice(_ble_device())
     device._is_on = True
     device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(return_value=False)
 
-    result = await device.turn_off()
+    with patch(
+        "custom_components.neewer_ble.neewer_device.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await device.turn_off()
 
     assert result
-    device._send_command.assert_awaited_once_with([0x78, 0x81, 0x01, 0x02, 0xFC])
+    mac = _mac_bytes(device.address)
+    commands = [call.args for call in device._send_command.await_args_list]
+    assert commands == [
+        *[
+            (_with_checksum(pattern),)
+            for pattern in (
+                [0x78, 0x95, 0x06, *mac],
+                [0x78, 0xD3, 0x07, *mac, 0x00],
+                [0x78, 0xD1, 0x06, *mac],
+                [0x78, 0x80, 0x00],
+            )
+        ],
+        ([0x78, 0x81, 0x01, 0x02, 0xFC],),
+    ]
     assert not device.is_on
 
 
@@ -125,6 +153,286 @@ async def test_turn_off_failure_preserves_assumed_state() -> None:
 
     assert not result
     assert device.is_on
+
+
+def test_detects_rgb660_pro_capabilities() -> None:
+    """RGB660 PRO should use the standard RGB protocol with power commands."""
+    device = NeewerLightDevice(_ble_device("NEEWER-RGB660 PRO"))
+
+    assert device.model_name == "RGB660 PRO"
+    assert device.supports_rgb
+    assert device.color_temp_range == (3200, 5600)
+    assert not device.is_cct_only
+    assert device.uses_power_commands
+    assert not device.uses_infinity_protocol
+
+
+async def test_rgb660_pro_turn_on_sends_power_then_hsi() -> None:
+    """RGB660 PRO turn-on must run the handshake, wake, then send HSI."""
+    device = NeewerLightDevice(_ble_device("NEEWER-RGB660 PRO"))
+    device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(side_effect=[False, True])
+
+    with patch(
+        "custom_components.neewer_ble.neewer_device.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await device.turn_on(brightness=75, hue=210, saturation=80)
+
+    assert result
+    mac = _mac_bytes(device.address)
+    commands = [call.args for call in device._send_command.await_args_list]
+    assert commands == [
+        *[
+            (_with_checksum(pattern),)
+            for pattern in (
+                [0x78, 0x95, 0x06, *mac],
+                [0x78, 0xD3, 0x07, *mac, 0x00],
+                [0x78, 0xD1, 0x06, *mac],
+                [0x78, 0x80, 0x00],
+            )
+        ],
+        ([0x78, 0x81, 0x01, 0x01, 0xFB],),
+        (_with_checksum([0x78, 0x86, 0x05, 210, 0, 80, 75, 0x00]),),
+    ]
+    assert device._send_command.await_args_list[0].kwargs["keep_connected"]
+    assert device.is_on
+    assert device.brightness == 75
+
+
+async def test_rgb660_pro_turn_on_cct_sends_power_then_cct() -> None:
+    """RGB660 PRO CCT turn-on must run the handshake, wake, then send CCT."""
+    device = NeewerLightDevice(_ble_device("NEEWER-RGB660 PRO"))
+    device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(side_effect=[False, True])
+
+    with patch(
+        "custom_components.neewer_ble.neewer_device.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await device.turn_on(brightness=50, color_temp_kelvin=5600)
+
+    assert result
+    mac = _mac_bytes(device.address)
+    commands = [call.args for call in device._send_command.await_args_list]
+    assert commands == [
+        *[
+            (_with_checksum(pattern),)
+            for pattern in (
+                [0x78, 0x95, 0x06, *mac],
+                [0x78, 0xD3, 0x07, *mac, 0x00],
+                [0x78, 0xD1, 0x06, *mac],
+                [0x78, 0x80, 0x00],
+            )
+        ],
+        ([0x78, 0x81, 0x01, 0x01, 0xFB],),
+        (_with_checksum([0x78, 0x87, 0x04, 50, 56, 0x00, 0x00]),),
+    ]
+    assert device._send_command.await_args_list[0].kwargs["keep_connected"]
+    assert device.is_on
+    assert device.brightness == 50
+
+
+async def test_rgb660_pro_power_failure_preserves_assumed_state() -> None:
+    """If the wake-up packet fails, the entity must not claim to be on."""
+    device = NeewerLightDevice(_ble_device("NEEWER-RGB660 PRO"))
+    device._send_command = AsyncMock(return_value=False)
+    device.async_get_power_status = AsyncMock(return_value=False)
+
+    result = await device.turn_on(brightness=75, hue=210, saturation=80)
+
+    assert not result
+    assert not device.is_on
+    device._send_command.assert_awaited_once()
+
+
+async def test_rgb660_pro_turn_off_uses_power_command() -> None:
+    """RGB660 PRO should handshake, power off, and verify the transition."""
+    device = NeewerLightDevice(_ble_device("NEEWER-RGB660 PRO"))
+    device._is_on = True
+    device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(return_value=False)
+
+    with patch(
+        "custom_components.neewer_ble.neewer_device.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await device.turn_off()
+
+    assert result
+    mac = _mac_bytes(device.address)
+    commands = [call.args for call in device._send_command.await_args_list]
+    assert commands == [
+        *[
+            (_with_checksum(pattern),)
+            for pattern in (
+                [0x78, 0x95, 0x06, *mac],
+                [0x78, 0xD3, 0x07, *mac, 0x00],
+                [0x78, 0xD1, 0x06, *mac],
+                [0x78, 0x80, 0x00],
+            )
+        ],
+        ([0x78, 0x81, 0x01, 0x02, 0xFC],),
+    ]
+    assert not device.is_on
+
+
+async def test_rgb660_pro_turn_off_ignored_packet_fails_loudly() -> None:
+    """A power-off the light ignores must fail instead of lying about state."""
+    device = NeewerLightDevice(_ble_device("NEEWER-RGB660 PRO"))
+    device._is_on = True
+    device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(return_value=True)
+
+    with patch(
+        "custom_components.neewer_ble.neewer_device.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await device.turn_off()
+
+    assert not result
+    assert device.is_on
+
+
+async def test_rgb660_pro_turn_on_skips_power_when_already_on() -> None:
+    """An already-on panel must not receive the wake packet (it wedges)."""
+    device = NeewerLightDevice(_ble_device("NEEWER-RGB660 PRO"))
+    device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(return_value=True)
+
+    result = await device.turn_on(brightness=40, hue=90, saturation=50)
+
+    assert result
+    commands = [call.args for call in device._send_command.await_args_list]
+    assert commands == [(_with_checksum([0x78, 0x86, 0x05, 90, 0, 50, 40, 0x00]),)]
+    device.async_get_power_status.assert_awaited_once_with(keep_connected=True)
+    assert device.is_on
+
+
+async def test_rgb660_pro_turn_on_skips_power_when_query_fails() -> None:
+    """A failed status query must not lead to a blind wake packet."""
+    device = NeewerLightDevice(_ble_device("NEEWER-RGB660 PRO"))
+    device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(return_value=None)
+
+    result = await device.turn_on(brightness=40, hue=90, saturation=50)
+
+    assert result
+    commands = [call.args for call in device._send_command.await_args_list]
+    assert commands == [(_with_checksum([0x78, 0x86, 0x05, 90, 0, 50, 40, 0x00]),)]
+    assert device.is_on
+
+
+async def test_rgb660_pro_turn_on_wake_verify_failure_fails_loudly() -> None:
+    """A wake the light ignores must fail instead of claiming it is on."""
+    device = NeewerLightDevice(_ble_device("NEEWER-RGB660 PRO"))
+    device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(side_effect=[False, False])
+
+    with patch(
+        "custom_components.neewer_ble.neewer_device.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await device.turn_on(brightness=75, hue=210, saturation=80)
+
+    assert not result
+    assert not device.is_on
+
+
+async def test_turn_on_skips_power_when_already_on() -> None:
+    """GL1 Pro in the on state should only get brightness/temp packets."""
+    device = NeewerLightDevice(_ble_device())
+    device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(return_value=True)
+
+    with patch(
+        "custom_components.neewer_ble.neewer_device.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await device.turn_on(brightness=60, color_temp_kelvin=4500)
+
+    assert result
+    commands = [call.args for call in device._send_command.await_args_list]
+    assert commands == [
+        ([0x78, 0x82, 0x01, 60, 0x37],),
+        ([0x78, 0x83, 0x01, 45, 0x29],),
+    ]
+    assert device.is_on
+
+
+def test_detects_t100c_capabilities() -> None:
+    """The T100C bulb should map to its profile with power commands."""
+    device = NeewerLightDevice(_ble_device("NEEWER-T100C-A1B2C3"))
+
+    assert device.model_name == "T100C"
+    assert device.supports_rgb
+    assert device.color_temp_range == (3200, 5600)
+    assert not device.is_cct_only
+    assert device.uses_power_commands
+    assert not device.uses_infinity_protocol
+
+
+async def test_t100c_turn_on_sends_power_and_cct() -> None:
+    """T100C turn-on should handshake, wake, then send the CCT packet."""
+    device = NeewerLightDevice(_ble_device("NEEWER-T100C-A1B2C3"))
+    device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(side_effect=[False, True])
+
+    with patch(
+        "custom_components.neewer_ble.neewer_device.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await device.turn_on(brightness=60, color_temp_kelvin=4500)
+
+    assert result
+    mac = _mac_bytes(device.address)
+    commands = [call.args for call in device._send_command.await_args_list]
+    assert commands == [
+        *[
+            (_with_checksum(pattern),)
+            for pattern in (
+                [0x78, 0x95, 0x06, *mac],
+                [0x78, 0xD3, 0x07, *mac, 0x00],
+                [0x78, 0xD1, 0x06, *mac],
+                [0x78, 0x80, 0x00],
+            )
+        ],
+        ([0x78, 0x81, 0x01, 0x01, 0xFB],),
+        (_with_checksum([0x78, 0x87, 0x04, 60, 45, 0x00, 0x00]),),
+    ]
+    assert device._send_command.await_args_list[0].kwargs["keep_connected"]
+    assert device.is_on
+
+
+async def test_t100c_turn_off_uses_power_command() -> None:
+    """T100C must handshake, power off, and verify the transition."""
+    device = NeewerLightDevice(_ble_device("NEEWER-T100C-A1B2C3"))
+    device._is_on = True
+    device._send_command = AsyncMock(return_value=True)
+    device.async_get_power_status = AsyncMock(return_value=False)
+
+    with patch(
+        "custom_components.neewer_ble.neewer_device.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await device.turn_off()
+
+    assert result
+    mac = _mac_bytes(device.address)
+    commands = [call.args for call in device._send_command.await_args_list]
+    assert commands == [
+        *[
+            (_with_checksum(pattern),)
+            for pattern in (
+                [0x78, 0x95, 0x06, *mac],
+                [0x78, 0xD3, 0x07, *mac, 0x00],
+                [0x78, 0xD1, 0x06, *mac],
+                [0x78, 0x80, 0x00],
+            )
+        ],
+        ([0x78, 0x81, 0x01, 0x02, 0xFC],),
+    ]
+    assert not device.is_on
 
 
 def test_detects_beta_device_profiles() -> None:

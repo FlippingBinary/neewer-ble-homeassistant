@@ -182,7 +182,7 @@ SUPPORTED_MODELS = {
         "name": "T100C",
         "rgb": True,
         "cct_range": (3200, 5600),
-        "cct_only": True,
+        "cct_only": False,
         "light_type": 0,
         "use_power_commands": True,
     },
