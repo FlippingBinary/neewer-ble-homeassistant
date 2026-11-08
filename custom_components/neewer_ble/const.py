@@ -97,6 +97,7 @@ SUPPORTED_MODELS = {
         "cct_range": (3200, 5600),
         "cct_only": False,
         "light_type": 0,
+        "use_power_commands": True,
     },
     "RGB660": {
         "name": "RGB660",
