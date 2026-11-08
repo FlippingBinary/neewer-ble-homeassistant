@@ -73,9 +73,7 @@ async def test_bluetooth_discovery_confirmation(hass) -> None:
         "custom_components.neewer_ble.async_setup_entry",
         return_value=True,
     ):
-        created = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {}
-        )
+        created = await hass.config_entries.flow.async_configure(result["flow_id"], {})
 
     assert created["type"] is FlowResultType.CREATE_ENTRY
     assert created["data"]["address"] == service_info.address
@@ -179,7 +177,8 @@ async def test_manual_flow_rejects_invalid_address(hass, address) -> None:
 async def test_manual_flow_normalizes_valid_address(hass, address) -> None:
     """Valid manual addresses should use uppercase data and unique IDs."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER},
+        DOMAIN,
+        context={"source": config_entries.SOURCE_USER},
     )
     manual = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"address": "manual"}
@@ -211,7 +210,8 @@ async def test_manual_flow_aborts_for_discovered_entry(hass, address) -> None:
     assert created["type"] is FlowResultType.CREATE_ENTRY
 
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER},
+        DOMAIN,
+        context={"source": config_entries.SOURCE_USER},
     )
     manual = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"address": "manual"}

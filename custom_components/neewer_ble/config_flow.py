@@ -193,9 +193,7 @@ class NeewerBLEConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.hass, connectable=True
         ):
             if self._is_neewer_device(discovery_info.name):
-                self._discovered_devices[discovery_info.address] = (
-                    discovery_info.device
-                )
+                self._discovered_devices[discovery_info.address] = discovery_info.device
 
         _LOGGER.debug("Discovered %d Neewer device(s)", len(self._discovered_devices))
 

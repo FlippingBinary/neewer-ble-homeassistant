@@ -28,9 +28,7 @@ PLATFORMS: list[Platform] = [Platform.LIGHT]
 type NeewerBLEConfigEntry = ConfigEntry[NeewerLightDevice]
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: NeewerBLEConfigEntry
-) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: NeewerBLEConfigEntry) -> bool:
     """Set up Neewer BLE Lights from a config entry."""
     address: str = entry.data[CONF_ADDRESS]
     name: str = entry.data.get("name", "Neewer Light")
@@ -39,9 +37,7 @@ async def async_setup_entry(
 
     def _ble_device_callback() -> BLEDevice | None:
         """Return the freshest BLE device from Home Assistant's shared scanner."""
-        return async_ble_device_from_address(
-            hass, address.upper(), connectable=True
-        )
+        return async_ble_device_from_address(hass, address.upper(), connectable=True)
 
     ble_device = _ble_device_callback()
 
@@ -108,9 +104,7 @@ async def async_update_options(
     )
 
 
-async def async_unload_entry(
-    hass: HomeAssistant, entry: NeewerBLEConfigEntry
-) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: NeewerBLEConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug("Unloading Neewer BLE device: %s", entry.data.get(CONF_ADDRESS))
 
@@ -123,9 +117,7 @@ async def async_unload_entry(
     return unload_ok
 
 
-async def async_migrate_entry(
-    hass: HomeAssistant, entry: NeewerBLEConfigEntry
-) -> bool:
+async def async_migrate_entry(hass: HomeAssistant, entry: NeewerBLEConfigEntry) -> bool:
     """Migrate old entry."""
     _LOGGER.debug("Migrating from version %s", entry.version)
 
